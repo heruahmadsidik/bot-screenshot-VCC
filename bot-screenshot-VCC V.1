@@ -1,0 +1,226 @@
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const puppeteer = require('puppeteer');
+const cron = require('node-cron');
+const fs = require('fs');
+
+const GROUP_ID = "ID_GRUP_WA_KAMU_DIAKHIRI+TANDA_0@g.us";
+const VCC_URL = "https://vcc.pln.co.id/outage/monitoring";
+
+let browser;
+let page;
+let sedangProses = false;
+
+const client = new Client({
+    authStrategy: new LocalAuth()
+});
+
+
+// ============================
+// QR LOGIN
+// ============================
+
+client.on('qr', qr => {
+    qrcode.generate(qr, { small: true });
+});
+
+
+// ============================
+// BOT READY
+// ============================
+
+client.on('ready', async () => {
+
+    console.log("✅ BOT WHATSAPP SIAP");
+
+    await startBrowser();
+
+    console.log("✅ Browser VCC siap");
+
+});
+
+client.initialize();
+
+
+// ============================
+// START BROWSER
+// ============================
+
+async function startBrowser(){
+
+    browser = await puppeteer.launch({
+        headless: false,
+        userDataDir: './vcc-session',
+        args: ['--no-sandbox'],
+        protocolTimeout: 120000
+    });
+
+    page = await browser.newPage();
+
+    await page.setViewport({
+        width: 960,
+        height: 1080,
+        deviceScaleFactor: 1
+    });
+
+    console.log("🌐 Membuka dashboard VCC...");
+
+    await page.goto(VCC_URL, { 
+        waitUntil: 'networkidle2',
+        timeout: 60000
+    });
+
+}
+
+
+// ============================
+// SCREENSHOT VCC
+// ============================
+
+async function screenshotVCC(){
+
+    for (let i = 0; i < 3; i++) {
+
+        try {
+
+            console.log("🔄 Reload dashboard VCC...");
+
+            await page.reload({
+                waitUntil: 'networkidle2',
+                timeout: 60000
+            });
+
+            await new Promise(r => setTimeout(r, 8000));
+
+            console.log("📸 Mengambil screenshot...");
+
+            await page.screenshot({
+                path: 'vcc.png',
+                clip: {
+                    x: 215,
+                    y: 430,
+                    width: 340,
+                    height: 330
+                },
+                timeout: 60000
+            });
+
+            console.log("✅ Screenshot berhasil");
+
+            return;
+
+        } catch (err) {
+
+            console.log("❌ Gagal screenshot, retry ke-" + (i + 1));
+
+        }
+    }
+
+    throw new Error("Screenshot gagal setelah 3 percobaan");
+
+}
+
+
+// ============================
+// AMBIL SCREENSHOT (MENIT 01)
+// ============================
+
+async function ambilScreenshot(){
+
+    if (sedangProses){
+        console.log("⚠️ Masih ada proses berjalan...");
+        return;
+    }
+
+    sedangProses = true;
+
+    try{
+
+        console.log("⏰ Ambil screenshot (menit 01)...");
+
+        await screenshotVCC();
+
+        console.log("✅ Screenshot siap disimpan (vcc.png)");
+
+    }catch(err){
+
+        console.log("❌ ERROR screenshot:", err);
+
+    }finally{
+
+        sedangProses = false;
+
+    }
+
+}
+
+
+// ============================
+// KIRIM KE WHATSAPP (MENIT 04)
+// ============================
+
+async function kirimWA(){
+
+    if (sedangProses){
+        console.log("⚠️ Proses sebelumnya masih berjalan...");
+        return;
+    }
+
+    sedangProses = true;
+
+    try{
+
+        console.log("📤 Mengirim laporan VCC (menit 04)...");
+
+        // cek file ada atau tidak
+        if (!fs.existsSync('./vcc.png')) {
+            console.log("❌ File screenshot belum ada!");
+            return;
+        }
+
+        const media = MessageMedia.fromFilePath('./vcc.png');
+
+        await client.sendMessage(GROUP_ID, media);
+
+        const now = new Date().toLocaleString();
+
+        console.log("======================================");
+        console.log("✅ SCREENSHOT BERHASIL TERKIRIM");
+        console.log("📅 Waktu :", now);
+        console.log("📁 File  : vcc.png");
+        console.log("📤 Tujuan:", GROUP_ID);
+        console.log("======================================");
+
+    }catch(err){
+
+        console.log("❌ ERROR KIRIM:", err);
+
+    }finally{
+
+        sedangProses = false;
+
+    }
+
+}
+
+
+// ============================
+// CRON SCHEDULE
+// ============================
+
+// ⏰ Menit 01 → Screenshot
+cron.schedule('1 * * * *', () => {
+
+    console.log("🕐 Jadwal screenshot (menit 01)");
+    ambilScreenshot();
+
+});
+
+
+// ⏰ Menit 04 → Kirim WA
+cron.schedule('4 * * * *', () => {
+
+    console.log("🕓 Jadwal kirim WA (menit 04)");
+    kirimWA();
+
+});
